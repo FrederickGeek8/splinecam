@@ -36,7 +36,7 @@ class adapter(torch.jit.ScriptModule):
     """
     
     def __init__(self,T,name='adapter',
-                 device='cuda', dtype=torch.float32):
+                 device=utils.DEFAULT_DEVICE, dtype=torch.float32):
         """
         T : projection mat.
         """
@@ -101,7 +101,7 @@ class linear(torch.nn.Module):
     
     def __init__(self,linear_layer, is_classifier=False,
                  act_layer=None,bn_layer=None,name='linear_layer',
-                 device='cuda', dtype=torch.float32):
+                 device=utils.DEFAULT_DEVICE, dtype=torch.float32):
         '''
         Wrapper for linear layer with batchnorm and/or ReLU activation
         Follows order Linear->BN->Activation
@@ -293,7 +293,7 @@ class model_wrapper(object):
     @torch.no_grad()
     def __init__(self, model, input_shape=None, is_classifier=False,
                  custom_layers = [], custom_activations = [], 
-                 device='cuda',as_sequential=True,T=None, dtype=torch.float32):
+                 device=utils.DEFAULT_DEVICE,as_sequential=True,T=None, dtype=torch.float32):
         
         self.device = device
         self.dtype = dtype
@@ -450,7 +450,7 @@ class conv2d(torch.nn.Module):
     def __init__(self,conv2d_layer,input_shape,
                  act_layer=None,bn_layer=None,custom_activations=None,
                  name='conv2d_layer',
-                 device='cuda', dtype=torch.float32):
+                 device=utils.DEFAULT_DEVICE, dtype=torch.float32):
         '''
         Wrapper for linear layer with batchnorm and/or ReLU activation
         Follows order Linear->BN->Activation
@@ -731,7 +731,7 @@ class conv2d(torch.nn.Module):
     
 #     def __init__(self,conv2d_layer,input_shape,
 #                  act_layer=None,bn_layer=None,name='conv2d_layer',
-#                  device='cuda', dtype=torch.float32):
+#                  device=utils.DEFAULT_DEVICE, dtype=torch.float32):
 #         '''
 #         Wrapper for linear layer with batchnorm and/or ReLU activation
 #         Follows order Linear->BN->Activation
@@ -990,7 +990,7 @@ class avgpool2d(torch.nn.Module):
     """
     
     def __init__(self,pool_layer,input_shape,name='avgpool2d_layer',
-                 device='cuda',dtype=torch.float32):
+                 device=utils.DEFAULT_DEVICE,dtype=torch.float32):
         '''
         Wrapper for linear layer with batchnorm and/or ReLU activation
         Follows order Linear->BN->Activation

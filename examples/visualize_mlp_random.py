@@ -32,7 +32,7 @@ for i in range(depth-1):
 layers.append(torch.nn.Linear(width,out_shape))
 
 model = torch.nn.Sequential(*layers)
-model.cuda()
+model.to(sc.utils.DEFAULT_DEVICE)
 
 model.eval()
 model.type(torch.float64)

@@ -3,6 +3,8 @@ from scipy.spatial import ConvexHull
 import torch
 import warnings
 
+DEFAULT_DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 @torch.jit.script
 def region_eccentricity_2d(poly,eps=1e-10):
     
@@ -116,7 +118,7 @@ def verify_collinear(v_new,v1,v2, eps: float = 1e-7):
     return torch.allclose(l1,l2+l3,rtol=0.,atol=eps)
 
 ## TODO: make this jittable
-def get_region_means(regions : list, dims: int, dtype: object = torch.float64, device : str = 'cuda'):
+def get_region_means(regions : list, dims: int, dtype: object = torch.float64, device : str = DEFAULT_DEVICE):
     '''
     finds the means of each region
     '''
@@ -273,7 +275,7 @@ def get_proj_mat(domain):
 
 
 @torch.no_grad()
-def get_nneigh_points(dataset,target_classes):
+def get_nneigh_points(dataset,target_classes, device=DEFAULT_DEVICE):
     """
     dataset: torch.dataset
     target_classes: list with 2 classes for which to find nearest neighbors
@@ -282,13 +284,13 @@ def get_nneigh_points(dataset,target_classes):
     mask = np.asarray(dataset['targets']) == target_classes[0]
     data1 = torch.from_numpy(
         dataset['data'][mask]
-    ).type(torch.float32).cuda().transpose(1,3) #channel first
+    ).type(torch.float32).to(device).transpose(1,3) #channel first
     data1 = data1.reshape(data1.shape[0],-1)
     
     mask = np.asarray(dataset['targets']) == target_classes[1]
     data2 = torch.from_numpy(
         dataset['data'][mask]
-    ).type(torch.float32).cuda().transpose(1,3) #channel first
+    ).type(torch.float32).to(device).transpose(1,3) #channel first
     data2 = data2.reshape(data2.shape[0],-1)
     
     dist = torch.cdist(data1,data2)

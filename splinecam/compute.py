@@ -43,7 +43,7 @@ def get_hyp_endpoints(poly,hyps,verify=True):
 
 @torch.no_grad()
 def to_next_layer_partition_batched(cycles, Abw, current_layer, NN,
-                                    dtype=torch.float64, device='cuda',
+                                    dtype=torch.float64, device=utils.DEFAULT_DEVICE,
                                     batch_size=-1, fwd_batch_size=-1):
     
     if batch_size == -1: ## revert to non-batched
@@ -137,6 +137,7 @@ def get_partitions_with_db(
     batch_size = 128,
     n_workers = 2,
     Abw_batch_size = 16,
+    device=utils.DEFAULT_DEVICE
 ):
     
     poly = (T[...,:-1].T @ (domain.T - T[...,-1:])).T
@@ -154,7 +155,7 @@ def get_partitions_with_db(
     for current_layer in range(1,len(NN.layers)-1):
         print(f'Current layer {current_layer}')
 
-        out_cyc,out_idx = graph.to_next_layer_partition_batched(
+        out_cyc, out_idx = graph.to_next_layer_partition_batched(
             cycles = out_cyc,
             Abw = Abw,
             NN = NN,
@@ -188,7 +189,7 @@ def get_partitions_with_db(
 
             del means
 
-            Wb =  NN.layers[current_layer].get_weights(dtype=torch.float32).cuda()
+            Wb =  NN.layers[current_layer].get_weights(dtype=torch.float32).to(device)
             Abw = Abw.type(torch.float32)
 
             dloader = torch.utils.data.DataLoader(Abw,
@@ -207,10 +208,10 @@ def get_partitions_with_db(
                 end = start+in_batch.shape[0]
 
                 out_batch = utils.get_Abw(
-                        q = q[start:end].cuda(),
+                        q = q[start:end].to(device),
                         Wb = Wb.to_dense(),
-                        incoming_Abw = in_batch.cuda()
-                            ) 
+                        incoming_Abw = in_batch.to(device)
+                ) 
 
                 out_Abw[start:end] = out_batch.cpu()
                 start = end
@@ -224,10 +225,10 @@ def get_partitions_with_db(
     
     try:
         hyp2input,endpoints = to_next_layer_partition_batched(out_cyc, Abw, -1, NN,
-                                        dtype=torch.float64, device='cuda',
+                                        dtype=torch.float64, device=device,
                                         batch_size=batch_size,
                                         fwd_batch_size=fwd_batch_size)
     except:
         endpoints = [None]
         
-    return out_cyc,endpoints,Abw
+    return out_cyc, endpoints, Abw

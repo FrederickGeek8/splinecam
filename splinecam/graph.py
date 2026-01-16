@@ -6,7 +6,7 @@ import igraph as ig
 import graph_tool as gt
 from graph_tool import topology
 
-from splinecam.utils import verify_collinear, get_region_means, get_Abw
+from splinecam.utils import verify_collinear, get_region_means, get_Abw, DEFAULT_DEVICE
 
 import tqdm
 
@@ -583,7 +583,7 @@ def cycles_list2vec(regions, repeat_first : bool = True):
         start += n
         ends[i] = start
         
-    return out_cycles,cyc_idx,ends
+    return out_cycles, cyc_idx, ends
 
 
 @torch.jit.script
@@ -652,7 +652,7 @@ def create_hyp_combinations(hyps,hyp_idx,endpoints):
 
 
 @torch.no_grad()
-def to_next_layer_partition(cycles, Abw, current_layer, NN, dtype=torch.float64, device='cuda'):
+def to_next_layer_partition(cycles, Abw, current_layer, NN, dtype=torch.float64, device=DEFAULT_DEVICE):
     
     vec_cyc,cyc_idx,ends = cycles_list2vec(cycles)
     cycles_next = NN.layers[:current_layer].forward(vec_cyc.to(device))
@@ -750,7 +750,7 @@ def to_next_layer_partition(cycles, Abw, current_layer, NN, dtype=torch.float64,
     
     return res_regions, new_cyc_idx
 
-def _batched_gpu_op(method, data, batch_size, out_size, dtype=torch.float32, workers=2, out_device='cpu'):
+def _batched_gpu_op(method, data, batch_size, out_size, dtype=torch.float32, workers=2, device=DEFAULT_DEVICE, out_device='cpu'):
     
     dataloadr = torch.utils.data.DataLoader(data,
                                       pin_memory=False,
@@ -766,7 +766,7 @@ def _batched_gpu_op(method, data, batch_size, out_size, dtype=torch.float32, wor
     for in_batch in dataloadr:
         
         end  = start+in_batch.shape[0]
-        out_batch = method(in_batch.cuda())
+        out_batch = method(in_batch.to(device))
         out[start:end] = out_batch.to(out_device)
         start = end
 
@@ -786,7 +786,7 @@ class util_dataset(torch.utils.data.Dataset):
         return self.data1[idx], self.data2[idx]
 
 
-def _batched_gpu_op_2(method, data1, data2, batch_size, out_size, dtype=torch.float32, workers=2):
+def _batched_gpu_op_2(method, data1, data2, batch_size, out_size, dtype=torch.float32, workers=2, device=DEFAULT_DEVICE):
     
     assert data1.shape[0] == data2.shape[0]
     
@@ -804,7 +804,7 @@ def _batched_gpu_op_2(method, data1, data2, batch_size, out_size, dtype=torch.fl
     for in_batch1,in_batch2 in dataloadr:
         
         end  = start+in_batch1.shape[0]
-        out_batch = method(in_batch1.cuda(),in_batch2.cuda())
+        out_batch = method(in_batch1.to(device),in_batch2.to(device))
         out[start:end] = out_batch.cpu()
         start = end
 
@@ -813,7 +813,7 @@ def _batched_gpu_op_2(method, data1, data2, batch_size, out_size, dtype=torch.fl
 
 @torch.no_grad()
 def to_next_layer_partition_batched(cycles, Abw, current_layer, NN,
-                                    dtype=torch.float64, device='cuda',
+                                    dtype=torch.float64, device=DEFAULT_DEVICE,
                                     batch_size=-1, fwd_batch_size=-1, workers=2):
     
     if batch_size == -1: ## revert to non-batched
