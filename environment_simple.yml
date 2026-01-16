@@ -1,0 +1,32 @@
+name: splinecam
+channels:
+  - conda-forge
+dependencies:
+  - python=3.8.13
+  - pytorch=1.12
+  - torchvision=0.13.0
+
+  - atk-1.0=2.36.0
+  - tqdm=4.64.1
+  - networkx=2.8.4
+  - graph-tool=2.45
+  - python-igraph=0.10.2
+  - matplotlib-base=3.5.2
+  - matplotlib-inline=0.1.6
+  - xyzservices=2022.9.0
+  - bokeh=3.0.1
+  - contourpy=1.0.6
+  - pandas=1.5.1
+  - pytz=2022.6
+  - pyyaml=6.0
+
+  # # Uncomment for CUDA
+  # - cudatoolkit=11.3.1
+  # - cudnn=8.4.1.50
+
+  # For jupyter notebooks, including VSCode
+  - ipykernel
+
+  - pip
+  - pip:
+    - livelossplot==0.5.5
