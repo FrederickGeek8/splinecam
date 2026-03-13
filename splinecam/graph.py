@@ -13,34 +13,51 @@ import tqdm
 @torch.jit.script
 def make_line_2D(vert1,vert2):
     '''
-    make 2D lines
-    vert1: batchsize x 2
-    vert2: batchsize x 2
+    Make 2D line equations (Ax + By + C = 0) from pairs of vertices.
+    
+    Args:
+        vert1 (torch.Tensor): First set of vertices, shape (batchsize, 2).
+        vert2 (torch.Tensor): Second set of vertices, shape (batchsize, 2).
+        
+    Returns:
+        torch.Tensor: Line parameters [A, B, C] of shape (batchsize, 3).
     '''
+    
     x1x2 = vert1[:,0]-vert2[:,0]
     y1y2 = vert1[:,1]-vert2[:,1]
+    
     b = vert1[:,1]*x1x2-vert1[:,0]*y1y2
+    # Return [A, B, C] where A = y1-y2, B = -(x1-x2), C = b
     return torch.hstack((y1y2[...,None],-x1x2[...,None],b[...,None]))
 
 @torch.jit.script
 def find_intersection_2D(line1, line2, eps : float = 1e-7, verify : bool = False):
     '''
-    lines1: batch_size x 3
-    lines2: batch_size x 3
+    Find intersection points of two batches of 2D lines.
+    
+    Args:
+        line1 (torch.Tensor): First set of lines [A, B, C], shape (batchsize, 3).
+        line2 (torch.Tensor): Second set of lines [A, B, C], shape (batchsize, 3).
+        eps (float): Tolerance for verification.
+        verify (bool): If True, verifies the intersection points satisfy the line equations.
+        
+    Returns:
+        tuple: (intersection points (batchsize, 2), verification flag (bool or torch.Tensor))
     '''
     
+    # Concatenate the line parameter matrices horizontally to form A and b from Ax + b = 0
     Ab = torch.cat(
         (torch.reshape(line1,shape=(line1.shape[0],1,line1.shape[1])),
          torch.reshape(line2,shape=(line2.shape[0],1,line2.shape[1]))),
         dim=1
     )
     
-    # Ax + b = 0 -> Ax = -b
+    # Solve system of linear equations Ax + b = 0 -> Ax = -b
     v = torch.linalg.solve(Ab[...,:-1], -Ab[...,-1])
     
     flag = False
     if verify:
-        
+        # Verify if the computed point v satisfies Ax + b = 0 (i.e., Ax = -b)
         flag = torch.allclose(
             torch.bmm(Ab[...,:-1],v[...,None]),
             -Ab[...,-1][...,None],
@@ -53,6 +70,17 @@ def find_intersection_2D(line1, line2, eps : float = 1e-7, verify : bool = False
 
 @torch.jit.script
 def get_intersection_pattern(poly,hyps):
+    '''
+    Get the binary intersection pattern (sign of pre-activations) of a polygon with hyperplanes.
+    
+    Args:
+        poly (torch.Tensor): Polygon vertices, shape (num_vertices, N).
+        hyps (torch.Tensor): Parameters of (N-1)-D hyperplanes equations, shape (num_hyps, N+1).
+        
+    Returns:
+        torch.Tensor: Binary pattern tensor, shape (num_vertices, num_hyps).
+    '''
+    # Compute the pre-activations for each vertex against each hyperplane
     pre_act = (hyps[...,:-1] @ poly.T + hyps[...,-1:]).T
     q = (pre_act>0)*1
     return q
@@ -61,17 +89,28 @@ def get_intersection_pattern(poly,hyps):
 @torch.jit.script
 def edge_hyp_intersections(qT,poly,hyps):
     '''
+    Find intersections between the polygon edges and the hyperplanes based on pattern changes.
+    
     Intersection cases for q \in {1,0}
     1. intersects two edges of polytope: two change of symbols for two different set of edges; two changes in q in a row
     4. intersects one vertex: only one zero and no change of symbol on two sides of zero; two consecutive changes in q
+    
+    Args:
+        qT (torch.Tensor): Transposed pattern tensor, shape (num_hyps, num_vertices).
+        poly (torch.Tensor): Polygon vertices.
+        hyps (torch.Tensor): Hyperplanes.
+        
+    Returns:
+        torch.Tensor: Indices of intersecting hyperplanes and the corresponding adjacent vertices
+                      (hyp_idx, vert_idx_1, vert_idx_2).
     '''
     
-    # find where intersection patters change; 
+    # find where intersection patterns change; detects edge crossing
     ## add vertex intersection check (cases 2-4)
     mask = qT[...,:-1] != qT[...,1:] ## happens outside as well
     hyp_vert_idx = torch.vstack(torch.where(mask)).T
     
-    # index for hyp and point pairs
+    # index for hyp and adjacent point (edge) pairs
     hyp_v1_v2_idx = torch.hstack([hyp_vert_idx,hyp_vert_idx[:,-1:]+1])
     
     return hyp_v1_v2_idx
@@ -79,10 +118,9 @@ def edge_hyp_intersections(qT,poly,hyps):
 @torch.jit.script
 def vertex_order_along_line_batched(endpoint1,endpoint2,v):
     '''
-    Returns the ordered index of the vertex sequence `v` from `endpoint1` to `endpoint2`
-    endpoint1,endpoint2: batchsize x 1 x 2
-    v:                   batchsize x N x 2
+    batched implementation of vertex_order_along_line
     '''
+    # Concatenate start point, end point, and intermediate vertices
     v = torch.cat([
         endpoint1,endpoint2,v
     ],dim=1)
@@ -107,27 +145,38 @@ def vertex_order_along_line_batched(endpoint1,endpoint2,v):
 @torch.jit.script
 def vertex_order_along_line(endpoint1,endpoint2,v):
     '''
-    Returns the ordered index of the vertex sequence `v` from `endpoint1` to `endpoint2`
-    endpoint1,endpoint2: 1 x 2
-    v:                   N x 2
+    Returns the ordered index of the vertex sequence `v` from `endpoint1` to `endpoint2`.
+    
+    Args:
+        endpoint1 (torch.Tensor): Start point of the line, shape (1, 2).
+        endpoint2 (torch.Tensor): End point of the line, shape (1, 2).
+        v (torch.Tensor): Intermediate vertices to order, shape (N, 2).
+        
+    Returns:
+        torch.Tensor: Ordered indices of the vertices.
     '''
+    # Concatenate start point, end point, and intermediate vertices
     v = torch.cat([
         endpoint1,endpoint2,v
     ],dim=0)
     
-    dim_to_sort = torch.argmax(v.std(0)) ## to avoid axis aligned lines
+    # Sort along the axis with greatest variance to handle axis aligned lines
+    dim_to_sort = torch.argmax(v.std(0)) 
     
+    # Sort vertices
     idx = v[:,dim_to_sort].argsort()
     
+    # Verify if sorting matches forward or reverse sequence
     endpoint_match1 = idx[0] == 0
     endpoint_match2 = idx[-1] == 1
     endpoint_match_rev1 = idx[0] == 1
     endpoint_match_rev2 = idx[-1] == 0
     
     if (endpoint_match1 and endpoint_match2):
-        pass
+        pass # Already in correctly matching order
     
     elif endpoint_match_rev1 and endpoint_match_rev2:
+        # Flip back to forward sequence if it was reversed
         idx = torch.flip(idx,dims=(0,))
         
     else:
@@ -136,12 +185,17 @@ def vertex_order_along_line(endpoint1,endpoint2,v):
         print('sorted idx ',idx)
         raise ValueError('sorting issue')
         
+    # Return mapping adjusted for the removal of start/end indices
     return idx[1:-1]-2
 
 
 # @torch.jit.script
 def order_vertices_poly(v,hyp_v1_v2_idx,poly,node_names):
+    '''
+    Orders intersection vertices that lie along the edges of a polygon.
+    '''
     
+    # Avoid mutating original tensors, was added due to some unexpected behavior
     hyp_v1_v2_idx = hyp_v1_v2_idx.clone()
     v = v.clone()
     poly = poly.clone()
@@ -151,9 +205,10 @@ def order_vertices_poly(v,hyp_v1_v2_idx,poly,node_names):
     hyp_v1_v2_idx_new = []
     node_names_new = []
     
+    # Process each edge of the polygon independently
     for ii in torch.unique(hyp_v1_v2_idx[:,1]):
         
-        # vertices with same start node
+        # Filter vertices located on the current edge (sharing the same start node)
         mask = hyp_v1_v2_idx[:,1] == ii
         adj = hyp_v1_v2_idx[mask].clone()
         verts = v[mask].clone()
@@ -164,6 +219,7 @@ def order_vertices_poly(v,hyp_v1_v2_idx,poly,node_names):
                                       poly[ii+1][None,...],
                                       verts)
         
+        # Append ordered elements
         v_new.append(verts[idx])
         hyp_v1_v2_idx_new.append(adj[idx])
         node_names_new.append(nodes[idx])
@@ -178,13 +234,19 @@ def add_line_to_graph(G,
                       layer_name=-1
                      ):
     '''
-    G graph to add new edges to
-    names: names for new nodes
-    start: start node currently in graph
-    end: end node currently in graph
-    v: new node vertices
+    Adds a new line consisting of multiple intersection nodes to the graph.
+    
+    Args:
+        G (nx.Graph): Target graph to add new edges to.
+        node_names (Tensor/List): Identifiers for the new sequence of nodes.
+        start (int/Tensor): Starting node (already currently in the graph).
+        end (int/Tensor): Ending node (already currently in the graph).
+        v (Tensor): Vertices (coordinates) to assign to each newly added node.
+        line_name (str/int): Label or index marking the source hyperplane.
+        layer_name (int): Indicator for the neural network layer.
     '''
     
+    # Cast tensors to basic types for standard graph libraries if needed
     try:
         node_names = node_names.numpy()
         start = np.int64(start.numpy().squeeze())
@@ -195,8 +257,10 @@ def add_line_to_graph(G,
     
     v = v.cpu()
     
+    # Insert new nodes into the graph containing their respective vertex coordinates
     [ G.add_node(o,v=vt) for o,vt in zip(node_names, v) ]
     
+    # Connect the edges
     G.add_edge(start,node_names[0],layer=layer_name,
                hyp=line_name
               )
@@ -214,17 +278,29 @@ def add_line_to_graph(G,
 
 def set_bidirectional(G):
     '''
-    Make graph-tool graph bidirectional
+    Utility to make an existing graph-tool graph essentially bidirectional 
+    by duplicating each edge with its reverse component.
+    
+    Args:
+        G (graph_tool.Graph): The target graph object to render bidirectional.
     '''
     
     G.set_directed(True)
 
+    # For each existing edge, append a new edge mapping the reverse direction
     for e in G.get_edges():
         G.add_edge(e[1],e[0])
         
 def _find_cycles(V,start_edge):
     '''
-    Given a bidirectional graph and a starting edge find cycles from that edge
+    Given a bidirectional graph-tool graph and a starting boundary edge, find cycles originating from that edge.
+    
+    Args:
+        V (graph_tool.Graph): A bidirectional graph of hyperplanes.
+        start_edge (graph_tool.Edge): The boundary edge from which to begin the cycle search.
+        
+    Returns:
+        list: A list of cycles, where each cycle is a list of vertex IDs.
     '''
     
     edge_list_remove = [[v for v in start_edge]]
@@ -291,7 +367,14 @@ def _find_cycles(V,start_edge):
         
 def find_cycles_in_graph(G,return_coordinates=False):
     '''
-    Given a graph-tool graph, find the cycles present in it
+    Given a graph-tool graph representing a polytope partition, find all simple cycles present within it.
+    
+    Args:
+        G (graph_tool.Graph): The input partition graph.
+        return_coordinates (bool): If True, returns a sequence of vertex coordinates instead of node IDs.
+        
+    Returns:
+        list: A list of cycles containing either node indices or coordinate tensors.
     '''
     
     # deep copy
@@ -318,7 +401,15 @@ def find_cycles_in_graph(G,return_coordinates=False):
 
 def cycle_nodes2vertices(V,cycles,dcast=np.asarray):
     '''
-    Get vertices for each cycles
+    Convert cycles represented by node sequences into their corresponding vertex coordinates.
+    
+    Args:
+        V (graph_tool.Graph): The graph possessing the 'v' vertex attribute containing coordinates.
+        cycles (list of lists): The list of cycles, where each inner list contains node indices.
+        dcast (callable): Typecasting function mapped over each coordinate.
+        
+    Returns:
+        list: cycles where node sequence indices are replaced by actual spatial vertex configurations.
     '''
     
     cycles = [[dcast(
@@ -328,12 +419,27 @@ def cycle_nodes2vertices(V,cycles,dcast=np.asarray):
     return cycles
 
 def create_poly_hyp_graph(poly, hyps, q=None, hyp_endpoints=None, dtype=torch.float64, verify=True):
+    '''
+    Constructs an undirected intersection graph from a polygon's boundary and hyperplanes.
+    
+    Args:
+        poly (torch.Tensor): Ordered vertices forming the polygon, shape (V, 2).
+        hyps (torch.Tensor): Parameters for the slicing hyperplanes, shape (H, 3).
+        q (torch.Tensor, optional): Precomputed intersection pattern matrix for speedup.
+        hyp_endpoints (torch.Tensor, optional): Precomputed geometric endpoints for each hyperplane.
+        dtype: Data type for geometry representation.
+        verify (bool): Flag toggling geometric consistency checks.
+        
+    Returns:
+        nx.Graph: A NetworkX graph
+    '''
 
     G = nx.Graph()
     
 #     hyps = layer.get_weights().type(dtype)
 #     poly = poly.type(dtype)
     
+    # index for redundant vertex because last vertex is same as first vertex
     redundant_vert_id = len(poly)-1
 
     poly_node_idx = np.asarray(list(range(len(poly)-1))+[0])
@@ -546,6 +652,9 @@ def create_poly_hyp_graph(poly, hyps, q=None, hyp_endpoints=None, dtype=torch.fl
 
 @torch.jit.script
 def hyp2input(hyps,Abw):
+    '''
+    Project hyperplane equations back to the 2D input space.
+    '''
     
     hyps = hyps[...,None,:]
     
@@ -560,7 +669,17 @@ def hyp2input(hyps,Abw):
 # @torch.jit.script TODO: Make jittable
 def cycles_list2vec(regions, repeat_first : bool = True):
     '''
-    convert list of cycles to vec and list of lengths
+    Flattens a list of lists into a contiguous tensor representation.
+    
+    Args:
+        regions (list of list of torch.Tensor): Each element is a list of vertices bounding a region.
+        repeat_first (bool): If True, implicitly closes the polygon by duplicating the first vertex at the end.
+        
+    Returns:
+        tuple: (out_cycles, cyc_idx, ends)
+            - out_cycles: Flattened tensor of all vertices. (num_vertices, num_dimensions)
+            - cyc_idx: Vector storing the matching region index from `regions` for each vertex. (num_vertices,)
+            - ends: Vector storing the idx of the last vertex in `out_cycles` for each region. (num_regions,)
     '''
     regions = regions.copy()
     
@@ -588,6 +707,17 @@ def cycles_list2vec(regions, repeat_first : bool = True):
 
 @torch.jit.script
 def get_edge_hyp_intersections(vec_cyc,hyp_v1_v2_idx,hyps_input):
+    '''
+    Compute intersection between vectorized cycles and hyperplanes.
+    
+    Args:
+        vec_cyc (torch.Tensor): Flattened vertices of cycles.
+        hyp_v1_v2_idx (torch.Tensor): Indices distinguishing which hyperplane (hyp_v1_v2_idx[:,0]) intersects which edge (vec_cyc[hyp_v1_v2_idx[:,1]] to vec_cyc[hyp_v1_v2_idx[:,2]]).
+        hyps_input (torch.Tensor): hyperplane equations in input space
+        
+    Returns:
+        torch.Tensor: intersection points
+    '''
     
     vec_cyc = vec_cyc.type(torch.float64)
     
@@ -618,7 +748,17 @@ def get_edge_hyp_intersections(vec_cyc,hyp_v1_v2_idx,hyps_input):
 @torch.jit.script
 def create_hyp_combinations(hyps,hyp_idx,endpoints):
     '''
-    find which hyps 
+    Identifies intersecting pairs of hyperplanes that are actively crossing to create new vertices.
+    
+    Args:
+        hyps (torch.Tensor): Bank of all hyperplanes.
+        hyp_idx (torch.Tensor): Masked subset identifier for active hyperplanes.
+        endpoints (torch.Tensor): Boundary geometric points acting as validity constraints.
+        
+    Returns:
+        tuple: (comb_idx, no_inter_idx)
+            - comb_idx: Indices representing valid hyperplane pairs.
+            - no_inter_idx: Singular hyperplanes that safely cut without colliding into others.
     '''
     ## make sure the number of hyps and endpoints are the same
     assert len(hyp_idx) == endpoints.shape[0]
@@ -653,63 +793,92 @@ def create_hyp_combinations(hyps,hyp_idx,endpoints):
 
 @torch.no_grad()
 def to_next_layer_partition(cycles, Abw, current_layer, NN, dtype=torch.float64, device=DEFAULT_DEVICE):
+    '''
+    Partitions the current partition defined by cycles, using current layer's hyperplanes.
     
+    Args:
+        cycles (list): List of lists. Each inner list is a list of vertices defining a 2D polygon.
+        Abw (torch.Tensor): Affine parameters for each cycle.
+        current_layer (int): Index specifying the target layer for intersection.
+        NN: Neural Network instance
+        dtype: Numerical precision higher ensures better intersection accuracy.
+        device: CPU or GPU targeting matrix routines.
+        
+    Returns:
+        tuple: (res_regions, new_cyc_idx) 
+    '''
+    
+    ## convert cycles to vectorized form
+    # vec_cyc: Flattened tensor of all vertices. (num_vertices, num_dimensions)
+    # cyc_idx: Vector storing the matching region index from `cycles` for each vertex. (num_vertices,)
+    # ends: Vector storing the idx of the last vertex in `vec_cyc` for each region. (num_regions,)
     vec_cyc,cyc_idx,ends = cycles_list2vec(cycles)
+    
+    ### STEP 1: Find which edges intersect with which hyperplanes
+
+    # forward pass through network
     cycles_next = NN.layers[:current_layer].forward(vec_cyc.to(device))
+    
+    # get intersection pattern for each vertex (num_vertices, num_hyps)
     q = NN.layers[current_layer].get_intersection_pattern(cycles_next)
     
-    ## edge intersections. remove between cycles
+    # find changes in intersection pattern between two consecutive vertices in vec_cyc
     mask = q.T[...,:-1] != q.T[...,1:]
     mask = mask.cpu()
+    
+    # set false for vertices between cycles which are not connected
     mask[:,(ends-1)[:-1]] = False
     
-    if mask.sum() == 0:
+    if mask.sum() == 0: ## no change in intersection pattern
         return cycles, torch.arange(len(cycles))
     
-    
-    ## get indices for hyps-vertex-cycle triads
+    ## get indices for hyperplanes that intersect, and index of the starting vertex of the intersecting edge
     hyp_vert_idx = torch.vstack(torch.where(mask)).T
     hyp_vert_cyc_idx = torch.hstack([hyp_vert_idx,cyc_idx[hyp_vert_idx[:,1:]]])
     
-    ## assert all cycles occur twice in order
     assert torch.all(hyp_vert_cyc_idx[::2,2] == hyp_vert_cyc_idx[1::2,2])
     
-    ## query hyps, only get rows which intersect, create idx map
+    ### STEP 2: Obtain parameters of hyperplanes that intersect
     inter_hyps_idx = torch.unique(hyp_vert_cyc_idx[:,0])
     hyps = NN.layers[current_layer].get_weights(row_idx=inter_hyps_idx)
     hyp_idx_map = torch.ones(q.shape[1],dtype=torch.int64)*(hyps.shape[0]+100) ## initialize with idx out of range
     hyp_idx_map[inter_hyps_idx] = torch.arange(hyps.shape[0], dtype=torch.int64)
     
-    ## bring hyps to corresponding cycle inputs
+    ### STEP 3 : Project hyperplanes to 2D input space
     hyps_input = hyp2input(
         hyps[hyp_idx_map[hyp_vert_cyc_idx[::2,0]]].to(device), ## hyps that intersect
         Abw[hyp_vert_cyc_idx[::2,2]].to(device) ## corresponding region Abw
     )[:,0,:]
     
     
-    ## get intersection with all cycle edges
+    ## order indices into tensor with hyp indices, v1, v2 indices
     hyp_v1_v2_idx= torch.hstack([hyp_vert_idx,hyp_vert_idx[:,-1:]+1])
+
+    ### STEP 4 : Get intersection points betweens hyperplanes and cycle edges
     v = get_edge_hyp_intersections(
         vec_cyc = vec_cyc.to(device),
         hyps_input = torch.repeat_interleave(hyps_input,2,dim=0).to(device),
         hyp_v1_v2_idx = hyp_v1_v2_idx
     )
     
+    ## matrix containing the line segments of the hyperplanes (hyps_input.shape[0],2,2)
     hyp_endpoints = v.reshape(-1,2,v.shape[-1])
     
-    ## iterate over each region and obtain new regions
+    ## find which unique cycles are intersected
     uniq_cycle_idx = torch.unique(hyp_vert_cyc_idx[:,-1])
     
     res_regions = []
     new_cyc_idx = []
     
-    ## for each intersected cycle, find new regions
+    ### STEP 5 : For each unique cycle, find new regions formed
     for target_cycle_idx in tqdm.tqdm(uniq_cycle_idx):
         
+        ## get vertices and hyperplanes that intersect with the current cycle
         vert_mask = cyc_idx==target_cycle_idx
         hyp_mask = hyp_vert_cyc_idx[::2,-1] == target_cycle_idx
 
-        
+        ## create graph by computing intersection between cycle edges and hyperplanes additionally provided
+        ## as line segments.
         G = create_poly_hyp_graph(
             poly = vec_cyc[vert_mask].to(device),
             hyps = hyps_input[hyp_mask].to(device),
@@ -727,6 +896,7 @@ def to_next_layer_partition(cycles, Abw, current_layer, NN, dtype=torch.float64,
         if current_layer == 1:
             print('Finding layer 1 regions')
         
+        ## find cycles in the graph
         cycles_new = find_cycles_in_graph(G,return_coordinates=False)
 
         cycles_new = cycle_nodes2vertices(
@@ -751,6 +921,9 @@ def to_next_layer_partition(cycles, Abw, current_layer, NN, dtype=torch.float64,
     return res_regions, new_cyc_idx
 
 def _batched_gpu_op(method, data, batch_size, out_size, dtype=torch.float32, workers=2, device=DEFAULT_DEVICE, out_device='cpu'):
+    '''
+    Executes a callable map operation in minibatches using multi-processed PyTorch workers.
+    '''
     
     dataloadr = torch.utils.data.DataLoader(data,
                                       pin_memory=False,
@@ -787,6 +960,9 @@ class util_dataset(torch.utils.data.Dataset):
 
 
 def _batched_gpu_op_2(method, data1, data2, batch_size, out_size, dtype=torch.float32, workers=2, device=DEFAULT_DEVICE):
+    '''
+    Executes a callable map operation in minibatches using multi-processed PyTorch workers.
+    '''
     
     assert data1.shape[0] == data2.shape[0]
     
@@ -815,6 +991,9 @@ def _batched_gpu_op_2(method, data1, data2, batch_size, out_size, dtype=torch.fl
 def to_next_layer_partition_batched(cycles, Abw, current_layer, NN,
                                     dtype=torch.float64, device=DEFAULT_DEVICE,
                                     batch_size=-1, fwd_batch_size=-1, workers=2):
+    '''
+    Batched and parallelized implementation of `to_next_layer_partition`.
+    '''
     
     if batch_size == -1: ## revert to non-batched
         res_regions, new_cyc_idx = to_next_layer_partition(
@@ -954,6 +1133,9 @@ def to_next_layer_partition_batched(cycles, Abw, current_layer, NN,
     return res_regions, new_cyc_idx
 
 def networkx2graphtool(G):
+    '''
+    Converts a NetworkX graph instance to a Graph-Tool instance.
+    '''
     
     G = ig.Graph.from_networkx(G)
 
